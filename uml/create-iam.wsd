@@ -1,0 +1,340 @@
+@startuml
+' Hide footer and change font
+skinparam useBetaStyle true
+skinparam sequence {
+    ArrowColor Black
+    ActorBorderColor Black
+    ActorFontName "Comic Sans MS"
+    ParticipantFontName "Comic Sans MS"
+    NoteFontName "Comic Sans MS"
+}
+hide footbox
+
+actor Client as client
+
+box "Presentation Layer"
+    participant "Presentation Layer" as api
+end box
+
+box "Application Layer"
+    participant "Create Auth Application" as app
+    participant "Validation Auth Application" as app_validate
+    participant "Mapping Auth Application" as app_mapping
+end box
+
+box "Infrastructure Layer"
+    participant "Common Infrastructure" as infra_common
+    participant "Key Infrastructure" as infra_key
+    participant "Authentication Infrastructure" as infra_auth
+    participant "Profile Infrastructure" as infra_profile
+    participant "Consent Infrastructure" as infra_consent
+    participant "Attribute Infrastructure" as infra_pattribute
+end box
+
+box "Database"
+    participant "Table: m_parameters" as m_parameters
+    participant "Table: t_keys" as t_keys
+    participant "Table: t_users" as t_users
+    participant "Table: t_user_authentications" as t_user_authentications
+    participant "Table: t_user_referrer_mappings" as t_user_referrer_mappings
+    participant "Table: m_user_profiles" as m_user_profiles
+    participant "Table: t_user_consent_mappings" as t_user_consent_mappings
+    participant "Table: t_user_attribute_mappings" as t_user_attribute_mappings
+end box
+
+client ->> api: Request: Create Authentication
+activate api
+    api ->> app: Request: Create Authentication Application
+    activate app
+        app ->> app_validate: Application Verify
+        activate app_validate
+            app_validate ->> app_validate: Verify User Info
+            alt User Info not valid
+                note right of app_validate
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20001
+                end note
+            end
+
+            app_validate ->> app_validate: Verify Authentication Info
+            alt Authentication Info not valid
+                note right of app_validate
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20002
+                end note
+            end
+
+            app_validate ->> app_validate: Verify Profile Info
+            alt Profile Info not valid
+                note right of app_validate
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20003
+                end note
+            end
+
+            app_validate ->> app_validate: Verify User Consent Info
+            alt User Consent Info not valid
+                note right of app_validate
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20004
+                end note
+            end
+
+            app_validate -->> app: Request Object is Valid
+        deactivate app_validate
+
+        app ->> infra_auth: Insert User
+        activate infra_auth
+            infra_auth ->> t_users: Create new row
+            activate t_users
+                note right of t_users
+                    INSERT INTO t_users
+                end note
+                t_users -->> infra_auth: Response: Entity (Inserted Row)
+            deactivate t_users
+
+            alt Error during Insert User
+                note right of infra_auth
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20001
+                end note
+            end
+            infra_auth -->> app: Response: Entity
+        deactivate infra_auth
+
+        alt If request.password != request.confirmPassword
+            note right of app
+                Hard Stop: status.code: 400
+                status.bizErrorCode: 20002
+            end note
+        end alt
+
+        note right of app
+            SET password = Decryption request.password via AES256 (Frontend Configuration by KEY & IVs)
+        end note
+
+        alt If password is not valid (min character 16, A-Z, a-z and 0-9)
+            note right of app
+                Hard Stop: status.code: 400
+                status.bizErrorCode: 20002
+            end note
+        end alt
+
+        app ->> infra_common: Get Default Algorithm
+         activate infra_common
+            infra_common ->> m_parameters: Get Default Algorithm
+            activate m_parameters
+                note right of m_parameters
+                    SELECT * FROM m_parameters WHERE key = 'DEFAULT_PASSWORD_ALGORITHM'
+                end note
+                m_parameters -->> infra_common: Response: algorithmParameter
+            deactivate m_parameters
+
+            alt Error during Get Default Algorithm
+                note right of infra_common
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20005
+                end note
+            end
+            infra_common -->> app: Response: algorithmParameter
+        deactivate infra_common
+
+       app ->> infra_common: Get Algorithm
+        activate infra_common
+            infra_common ->> m_parameters: Get Algorithm
+            activate m_parameters
+                note right of m_parameters
+                    SELECT * FROM algorithm.m_algorithms 
+                    WHERE name = algorithmParameter.value
+                end note
+            m_parameters -->> infra_common: Response: algorithm
+            deactivate m_parameters
+
+            alt Error during Get Algorithm or algorithm is null or algorithm.key_required is null
+                note right of infra_common
+                    Hard Stop: 
+                    status.code: 400
+                    status.bizErrorCode: 20005
+                end note
+            end alt
+
+            infra_common -->> app: Response: algorithm
+        deactivate infra_common
+
+        note right of app
+            SET algorithm = Convert algorithm.algorithm from byte[] to String
+            SET keyRequired = algorithm.key_required
+            SET keys[]
+        end note
+
+        loop key in keyRequired:
+            note right of app
+                SET generatedKey = Generate by key.keyType
+                keys.push(generatedKey, key.keyType)
+            end note
+        end loop
+
+        app ->> infra_key: Insert Keys
+        activate infra_key
+            infra_key ->> t_keys: Create new row
+            activate t_keys
+                note right of t_keys
+                    INSERT INTO t_keys
+                end note
+                t_keys -->> infra_key: Response: Entities (Inserted Row)
+            deactivate t_keys
+
+            alt Error during Insert Keys
+                note right of infra_key
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20002
+                end note
+            end
+            infra_key -->> app: Response: Entities
+        deactivate infra_key
+
+        note right of app
+            password = algorithm replace {password} by password, {key_x} by key[x] (key can be multiple key_1, key_2, key_3 , ... , key_n and etc)
+            password = password hash by algorithm
+        end note
+
+        app ->> infra_auth: Insert Password via password hashed, algorithm.id, sequence.keys
+        activate infra_auth
+            infra_auth ->> t_user_authentications: Create new row
+            activate t_user_authentications
+                note right of t_user_authentications
+                    INSERT INTO t_user_authentications
+                end note
+                t_user_authentications -->> infra_auth: Response: Entity (Inserted Row)
+            deactivate t_user_authentications
+
+            alt Error during Insert Password
+                note right of infra_auth
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20002
+                end note
+            end
+            infra_auth -->> app: Response: Entity
+        deactivate infra_auth
+
+        alt request.referrer exists
+            app ->> infra_auth: Insert Referral
+            activate infra_auth
+                infra_auth ->> t_user_referrer_mappings: Create new row
+                activate t_user_referrer_mappings
+                    note right of t_user_referrer_mappings
+                        INSERT INTO t_user_referrer_mappings
+                    end note
+                    t_user_referrer_mappings -->> infra_auth: Response: Entity (Inserted Row)
+                deactivate t_user_referrer_mappings
+
+                alt Error during Insert Referral
+                    note right of infra_auth
+                        Hard Stop: status.code: 400
+                        status.bizErrorCode: 20001
+                    end note
+                end
+                infra_auth -->> app: Response: Entity
+            deactivate infra_auth
+        end
+
+        app ->> infra_profile: Insert User Profile
+        activate infra_profile
+            infra_profile ->> m_user_profiles: Create new row
+            activate m_user_profiles
+                note right of m_user_profiles
+                    INSERT INTO m_user_profiles
+                end note
+                m_user_profiles -->> infra_profile: Response: Entity (Inserted Row)
+            deactivate m_user_profiles
+
+            alt Error during Insert User Profile
+                note right of infra_profile
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20003
+                end note
+            end
+            infra_profile -->> app: Response: Entity
+        deactivate infra_profile
+
+        app ->> infra_consent: Insert User Consent
+        activate infra_consent
+            infra_consent ->> t_user_consent_mappings: Create new row
+            activate t_user_consent_mappings
+                note right of t_user_consent_mappings
+                    INSERT INTO t_user_consent_mappings
+                end note
+                t_user_consent_mappings -->> infra_consent: Response: Entity (Inserted Row)
+            deactivate t_user_consent_mappings
+
+            alt Error during Insert User Consent
+                note right of infra_consent
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20004
+                end note
+            end
+            infra_consent -->> app: Response: Entity
+        deactivate infra_consent
+
+        app ->> infra_common: Get Default Attribute
+        activate infra_common
+            infra_common ->> m_parameters: Get Default Attribute
+            activate m_parameters
+                note right of m_parameters
+                    SELECT * FROM m_parameters WHERE key in ('DEFAULT_ATTRIBUTE', 'DEFAULT_ATTRIBUTE_VALUE')
+                end note
+                m_parameters -->> infra_common: Response: parameterAttributes
+            deactivate m_parameters
+
+            alt Error during Get Default Attribute
+                note right of infra_common
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20005
+                end note
+            end
+            infra_common -->> app: Response: Entity
+        deactivate infra_common
+
+        alt Default Attributes missing
+            note right of app
+                Hard Stop: status.code: 401
+                status.bizErrorCode: 30001
+            end note
+        end
+
+        note right of app
+            attributeId = parameterAttributes[key=="DEFAULT_ATTRIBUTE"].value
+            attributeValue = parameterAttributes[key=="DEFAULT_ATTRIBUTE_VALUE"].value
+        end note
+
+        app ->> infra_pattribute: Insert User Attribute with attributeId and attributeValue
+        activate infra_pattribute
+            infra_pattribute ->> t_user_attribute_mappings: Insert User Attribute
+            activate t_user_attribute_mappings
+                note right of t_user_attribute_mappings
+                    INSERT INTO t_user_attribute_mappings
+                end note
+                t_user_attribute_mappings -->> infra_pattribute: Response: Entity (Inserted Row)
+            deactivate t_user_attribute_mappings
+
+            alt Error during Insert User Attribute
+                note right of infra_pattribute
+                    Hard Stop: status.code: 400
+                    status.bizErrorCode: 20005
+                end note
+            end
+            infra_pattribute -->> app: Response: Entity
+        deactivate infra_pattribute
+
+        app ->> app_mapping: Create Response Model
+        activate app_mapping
+            app_mapping ->> app_mapping: Build Response Model
+            app_mapping -->> app: Response: responseObj
+        deactivate app_mapping
+
+        app -->> api: Response: responseObj
+    deactivate app
+    api -->> client: Response: responseObj
+deactivate api
+
+@enduml
