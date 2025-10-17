@@ -54,7 +54,7 @@ This API creates a new user account with authentication, profile, consent, and d
 
 ## Sequence Diagram
 
-![Sequence Diagram](../uml/create-iam.svg)
+![Sequence Diagram](/uml/create-iam.svg)
 
 ## Request Parameters
 
