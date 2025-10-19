@@ -26,7 +26,7 @@ Master table to store system parameters. Supports multiple languages, active/ina
 |     | value        | TEXT         |                   | Parameter value                                                        |
 
 ```sql
-CREATE SCHEMA IF NOT EXISTS m_parameters
+CREATE TABLE IF NOT EXISTS m_parameters
 (
     id UUID NOT NULL DEFAULT GEN_RANDOM_UUID() PRIMARY KEY,
     created_by UUID NOT NULL REFERENCES authentication.t_users(id),
